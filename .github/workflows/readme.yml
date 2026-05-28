@@ -32,60 +32,243 @@ jobs:
       - name: Show full project structure in logs
         shell: bash
         run: |
-          echo "===== FULL PROJECT STRUCTURE ====="
+          echo "----- FULL PROJECT STRUCTURE -----"
           tree || ls -R
  
-      - name: Capture project structure
+      - name: Capture compact project structure for AI
         id: structure
         shell: bash
         run: |
           echo "PROJECT_STRUCTURE<<EOF" >> "$GITHUB_OUTPUT"
-          (tree || ls -R) >> "$GITHUB_OUTPUT"
+          (tree -L 4 || ls -R | head -200) >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+ 
+      - name: Check if README exists
+        id: readme_check
+        shell: bash
+        run: |
+          if [ -f README.md ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+ 
+      - name: Read existing README
+        if: steps.readme_check.outputs.exists == 'true'
+        id: readme
+        shell: bash
+        run: |
+          echo "CURRENT_README<<EOF" >> "$GITHUB_OUTPUT"
+          cat README.md >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+ 
+      - name: Collect pom.xml
+        id: pom
+        shell: bash
+        run: |
+          echo "POM<<EOF" >> "$GITHUB_OUTPUT"
+          cat pom.xml >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
  
       - name: Detect changed files and commit details
         id: changes
         shell: bash
         run: |
-          echo "===== LAST COMMIT ====="
-          git log -1 --pretty=fuller
+          PREV_COMMIT=$(git rev-parse HEAD^ 2>/dev/null || true)
+          
+          echo "----- LAST COMMIT -----"
+          git log -1 --pretty=fuller || true
  
           echo "COMMIT_MESSAGE<<EOF" >> "$GITHUB_OUTPUT"
-          git log -1 --pretty=%B >> "$GITHUB_OUTPUT"
+          git log -1 --pretty=%B >> "$GITHUB_OUTPUT" || true
           echo "EOF" >> "$GITHUB_OUTPUT"
  
           echo "CHANGED_FILES<<EOF" >> "$GITHUB_OUTPUT"
-          git diff --name-only HEAD~1 HEAD >> "$GITHUB_OUTPUT"
+          if [ -n "$PREV_COMMIT" ]; then
+            git diff --name-only "$PREV_COMMIT" HEAD >> "$GITHUB_OUTPUT"
+          else
+            find src -type f \( -name "*.scala" -o -name "*.properties" \) | sort >> "$GITHUB_OUTPUT"
+            [ -f pom.xml ] && echo "pom.xml" >> "$GITHUB_OUTPUT"
+          fi
           echo "EOF" >> "$GITHUB_OUTPUT"
  
           echo "DIFF<<EOF" >> "$GITHUB_OUTPUT"
-          git diff HEAD~1 HEAD >> "$GITHUB_OUTPUT"
+          if [ -n "$PREV_COMMIT" ]; then
+            git diff --unified=1 "$PREV_COMMIT" HEAD -- ':(exclude)README.md' | head -500 >> "$GITHUB_OUTPUT"
+          else
+            echo "Initial README generation run - no previous commit available." >> "$GITHUB_OUTPUT"
+          fi
           echo "EOF" >> "$GITHUB_OUTPUT"
  
-      - name: Extract Scala + Config files
+      - name: Collect Scala file list
+        id: scala_list
+        shell: bash
+        run: |
+          echo "SCALA_FILES<<EOF" >> "$GITHUB_OUTPUT"
+          find src -type f -name "*.scala" | sort >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+ 
+      - name: Collect Config file list
+        id: config_list
+        shell: bash
+        run: |
+          echo "CONFIG_FILES<<EOF" >> "$GITHUB_OUTPUT"
+          find src -type f -name "*.properties" | sort >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+ 
+      - name: Extract changed Scala + Config files only
         id: code
         shell: bash
         run: |
-          echo "===== FILE LIST ====="
-          find src -type f \( -name "*.scala" -o -name "*.properties" \)
+          echo "----- CHANGED RELEVANT FILES -----"
+          PREV_COMMIT=$(git rev-parse HEAD^ 2>/dev/null || true)
+          if [ -n "$PREV_COMMIT" ]; then
+            changed_files=$(git diff --name-only "$PREV_COMMIT" HEAD | grep -E '^(src/.*\.(scala|properties)|pom\.xml)$' || true)
+          else
+            changed_files=$(find src -type f \( -name "*.scala" -o -name "*.properties" \) | sort)
+            if [ -f pom.xml ]; then
+              changed_files=$(printf "%s\n%s" "$changed_files" "pom.xml")
+            fi
+          fi
  
+          printf "%s\n" "$changed_files"
+          
           echo "CODE_CONTENT<<EOF" >> "$GITHUB_OUTPUT"
-          find src -type f \( -name "*.scala" -o -name "*.properties" \) -print0 \
-            | xargs -0 -I{} sh -c 'echo "===== {} ====="; cat "{}"; echo' \
-            >> "$GITHUB_OUTPUT"
+          for file in $changed_files; do
+            if [ -f "$file" ]; then
+              echo "----- $file -----" >> "$GITHUB_OUTPUT"
+              sed -n '1,250p' "$file" >> "$GITHUB_OUTPUT"
+              echo >> "$GITHUB_OUTPUT"
+            fi
+          done
           echo "EOF" >> "$GITHUB_OUTPUT"
  
-      - name: Read existing README
-        id: readme
+      - name: Generate README overview and structure
+        if: steps.readme_check.outputs.exists == 'false'
+        id: overview
+        uses: actions/ai-inference@v1
+        with:
+          model: gpt-4.1
+          prompt: |
+            You are an expert Spark Data Engineering documentation specialist.
+            
+            Generate only these README sections in professional markdown:
+            1. Project Overview
+            2. Project Structure
+ 
+            Rules:
+            - Be accurate and concise.
+            - Use only the provided repository information.
+            - Do not invent business logic not visible in the inputs.
+            - Return markdown only for these sections.
+ 
+            PROJECT STRUCTURE:
+            ${{ steps.structure.outputs.PROJECT_STRUCTURE }}
+ 
+            POM.XML:
+            ${{ steps.pom.outputs.POM }}
+ 
+            SCALA FILES:
+            ${{ steps.scala_list.outputs.SCALA_FILES }}
+ 
+      - name: Generate README data flow and tables
+        if: steps.readme_check.outputs.exists == 'false'
+        id: dataflow
+        uses: actions/ai-inference@v1
+        with:
+          model: gpt-4.1
+          prompt: |
+            You are an expert Spark Data Engineering documentation specialist.
+ 
+            Generate only these README sections in professional markdown:
+            3. Data Flow Diagram
+            4. Source Tables
+            6. Target Tables
+ 
+            Rules:
+            - If exact source/target tables are not explicit, state assumptions clearly.
+            - Include an ASCII data flow diagram if possible.
+            - Return markdown only for these sections.
+ 
+            PROJECT STRUCTURE:
+            ${{ steps.structure.outputs.PROJECT_STRUCTURE }}
+ 
+            RELEVANT CODE:
+            ${{ steps.code.outputs.CODE_CONTENT }}
+ 
+      - name: Generate README transformations and modules
+        if: steps.readme_check.outputs.exists == 'false'
+        id: transform
+        uses: actions/ai-inference@v1
+        with:
+          model: gpt-4.1
+          prompt: |
+            You are an expert Spark Data Engineering documentation specialist.
+ 
+            Generate only these README sections in professional markdown:
+            5. Transformations
+            7. Field Mapping
+            8. Module Documentation
+ 
+            Rules:
+            - Summarize transformations from the code provided.
+            - If exact field mapping is not fully derivable, provide a best effort table and note assumptions.
+            - Document each visible Scala module/file purpose.
+            - Return markdown only for these sections.
+ 
+            SCALA FILES:
+            ${{ steps.scala_list.outputs.SCALA_FILES }}
+ 
+            RELEVANT CODE:
+            ${{ steps.code.outputs.CODE_CONTENT }}
+ 
+      - name: Generate README config, usage, and testing
+        if: steps.readme_check.outputs.exists == 'false'
+        id: config_usage
+        uses: actions/ai-inference@v1
+        with:
+          model: gpt-4.1
+          prompt: |
+            You are an expert Spark Data Engineering documentation specialist.
+ 
+            Generate only these README sections in professional markdown:
+            9. Configuration
+            10. Usage
+            11. Testing
+ 
+            Rules:
+            - Explain visible configuration files and pom.xml dependencies if relevant.
+            - Provide Maven and spark-submit usage guidance appropriate for a Scala Spark project.
+            - If no explicit tests are present, state that clearly and suggest how testing can be performed.
+            - Return markdown only for these sections.
+ 
+            POM.XML:
+            ${{ steps.pom.outputs.POM }}
+ 
+            CONFIG FILES:
+            ${{ steps.config_list.outputs.CONFIG_FILES }}
+ 
+            RELEVANT CODE:
+            ${{ steps.code.outputs.CODE_CONTENT }}
+ 
+      - name: Save generated sections for initial README
+        if: steps.readme_check.outputs.exists == 'false'
         shell: bash
         run: |
-          touch README.md
-          echo "CURRENT_README<<EOF" >> "$GITHUB_OUTPUT"
-          cat README.md >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          printf "%s" '${{ steps.overview.outputs.response }}' > section1.md
+          printf "\n\n%s" '${{ steps.dataflow.outputs.response }}' > section2.md
+          printf "\n\n%s" '${{ steps.transform.outputs.response }}' > section3.md
+          printf "\n\n%s" '${{ steps.config_usage.outputs.response }}' > section4.md
  
-      - name: Run AI to update README incrementally
-        id: ai
+      - name: Merge generated sections into README
+        if: steps.readme_check.outputs.exists == 'false'
+        shell: bash
+        run: |
+          cat section1.md section2.md section3.md section4.md > README.md
+ 
+      - name: Incrementally update existing README
+        if: steps.readme_check.outputs.exists == 'true'
+        id: ai_incremental
         uses: actions/ai-inference@v1
         with:
           model: gpt-4.1
@@ -94,69 +277,42 @@ jobs:
  
             Update the existing README.md for this Spark/Scala ETL project.
  
-            IMPORTANT RULES:
-            - Do NOT regenerate the whole README if not necessary.
-            - Only update the sections impacted by the latest commit.
-            - Preserve existing sections that are still correct.
-            - If a change affects project structure, module documentation, data flow, source tables, transformations, target tables, usage, or configuration, update only those sections.
-            - Return the FULL final README.md content.
+            Rules:
+            - Do not rewrite the whole README unless necessary.
+            - Update only sections impacted by the latest commit.
+            - Preserve unchanged sections where possible.
+            - Return the full final README.md content.
  
-            ===========================
-            LAST COMMIT MESSAGE
-            ===========================
+            LAST COMMIT MESSAGE:
             ${{ steps.changes.outputs.COMMIT_MESSAGE }}
  
-            ===========================
-            CHANGED FILES
-            ===========================
+            CHANGED FILES:
             ${{ steps.changes.outputs.CHANGED_FILES }}
  
-            ===========================
-            GIT DIFF
-            ===========================
+            GIT DIFF:
             ${{ steps.changes.outputs.DIFF }}
  
-            ===========================
-            CURRENT README
-            ===========================
+            CURRENT README:
             ${{ steps.readme.outputs.CURRENT_README }}
  
-            ===========================
-            PROJECT STRUCTURE
-            ===========================
+            PROJECT STRUCTURE SUMMARY:
             ${{ steps.structure.outputs.PROJECT_STRUCTURE }}
  
-            ===========================
-            SOURCE CODE
-            ===========================
+            RELEVANT CHANGED FILE CONTENT:
             ${{ steps.code.outputs.CODE_CONTENT }}
  
-            ===========================
-            REQUIRED README STRUCTURE
-            ===========================
-            1. Project Overview
-            2. Project Structure
-            3. Data Flow Diagram
-            4. Source Tables
-            5. Transformations
-            6. Target Tables
-            7. Field Mapping
-            8. Module Documentation
-            9. Configuration
-            10. Usage
-            11. Testing
- 
-      - name: Debug AI output
+      - name: Write incremental README
+        if: steps.readme_check.outputs.exists == 'true'
         shell: bash
         run: |
-          echo "AI response length (bytes): $(printf "%s" '${{ steps.ai.outputs.response }}' | wc -c)"
-          echo "===== AI RESPONSE PREVIEW ====="
-          printf "%s" '${{ steps.ai.outputs.response }}' | tail -n 50
+          printf "%s" '${{ steps.ai_incremental.outputs.response }}' > README.md
  
-      - name: Write README file
+      - name: Debug README generation output
         shell: bash
         run: |
-          printf "%s" '${{ steps.ai.outputs.response }}' > README.md
+          echo "README length (bytes): $(wc -c < README.md)"
+          echo "===== README PREVIEW ====="
+          tail -n 50 README.md || true
  
       - name: Commit README if changed
         shell: bash
@@ -164,5 +320,6 @@ jobs:
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add README.md
-          git diff --cached --quiet || git commit -m "docs: update README based on latest commit"
+          git diff --cached --quiet || git commit -m "docs: update README"
           git push
+ 
