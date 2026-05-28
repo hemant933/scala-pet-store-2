@@ -1,0 +1,172 @@
+name: Auto Update README
+ 
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "pom.xml"
+      - "README.md"
+  workflow_dispatch:
+ 
+jobs:
+  generate-readme:
+    runs-on: [self-hosted, slz-terraform-runners]
+    timeout-minutes: 30
+ 
+    permissions:
+      contents: write
+      models: read
+ 
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+ 
+      - name: Install tree
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tree
+ 
+      - name: Show full project structure in logs
+        shell: bash
+        run: |
+          echo "===== FULL PROJECT STRUCTURE ====="
+          tree || ls -R
+ 
+      - name: Capture project structure
+        id: structure
+        shell: bash
+        run: |
+          echo "PROJECT_STRUCTURE<<EOF" >> "$GITHUB_OUTPUT"
+          (tree || ls -R) >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+ 
+      - name: Detect changed files and commit details
+        id: changes
+        shell: bash
+        run: |
+          echo "===== LAST COMMIT ====="
+          git log -1 --pretty=fuller
+ 
+          echo "COMMIT_MESSAGE<<EOF" >> "$GITHUB_OUTPUT"
+          git log -1 --pretty=%B >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+ 
+          echo "CHANGED_FILES<<EOF" >> "$GITHUB_OUTPUT"
+          git diff --name-only HEAD~1 HEAD >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+ 
+          echo "DIFF<<EOF" >> "$GITHUB_OUTPUT"
+          git diff HEAD~1 HEAD >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+ 
+      - name: Extract Scala + Config files
+        id: code
+        shell: bash
+        run: |
+          echo "===== FILE LIST ====="
+          find src -type f \( -name "*.scala" -o -name "*.properties" \)
+ 
+          echo "CODE_CONTENT<<EOF" >> "$GITHUB_OUTPUT"
+          find src -type f \( -name "*.scala" -o -name "*.properties" \) -print0 \
+            | xargs -0 -I{} sh -c 'echo "===== {} ====="; cat "{}"; echo' \
+            >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+ 
+      - name: Read existing README
+        id: readme
+        shell: bash
+        run: |
+          touch README.md
+          echo "CURRENT_README<<EOF" >> "$GITHUB_OUTPUT"
+          cat README.md >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+ 
+      - name: Run AI to update README incrementally
+        id: ai
+        uses: actions/ai-inference@v1
+        with:
+          model: gpt-4.1
+          prompt: |
+            You are an expert Spark Data Engineering documentation specialist.
+ 
+            Update the existing README.md for this Spark/Scala ETL project.
+ 
+            IMPORTANT RULES:
+            - Do NOT regenerate the whole README if not necessary.
+            - Only update the sections impacted by the latest commit.
+            - Preserve existing sections that are still correct.
+            - If a change affects project structure, module documentation, data flow, source tables, transformations, target tables, usage, or configuration, update only those sections.
+            - Return the FULL final README.md content.
+ 
+            ===========================
+            LAST COMMIT MESSAGE
+            ===========================
+            ${{ steps.changes.outputs.COMMIT_MESSAGE }}
+ 
+            ===========================
+            CHANGED FILES
+            ===========================
+            ${{ steps.changes.outputs.CHANGED_FILES }}
+ 
+            ===========================
+            GIT DIFF
+            ===========================
+            ${{ steps.changes.outputs.DIFF }}
+ 
+            ===========================
+            CURRENT README
+            ===========================
+            ${{ steps.readme.outputs.CURRENT_README }}
+ 
+            ===========================
+            PROJECT STRUCTURE
+            ===========================
+            ${{ steps.structure.outputs.PROJECT_STRUCTURE }}
+ 
+            ===========================
+            SOURCE CODE
+            ===========================
+            ${{ steps.code.outputs.CODE_CONTENT }}
+ 
+            ===========================
+            REQUIRED README STRUCTURE
+            ===========================
+            1. Project Overview
+            2. Project Structure
+            3. Data Flow Diagram
+            4. Source Tables
+            5. Transformations
+            6. Target Tables
+            7. Field Mapping
+            8. Module Documentation
+            9. Configuration
+            10. Usage
+            11. Testing
+ 
+      - name: Debug AI output
+        shell: bash
+        run: |
+          echo "AI response length (bytes): $(printf "%s" '${{ steps.ai.outputs.response }}' | wc -c)"
+          echo "===== AI RESPONSE PREVIEW ====="
+          printf "%s" '${{ steps.ai.outputs.response }}' | tail -n 50
+ 
+      - name: Write README file
+        shell: bash
+        run: |
+          printf "%s" '${{ steps.ai.outputs.response }}' > README.md
+ 
+      - name: Commit README if changed
+        shell: bash
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add README.md
+          git diff --cached --quiet || git commit -m "docs: update README based on latest commit"
+          git push
+AI Tools Directory - dealsbe.com
+Find useful AI tools for content, code, design, research, and automation.
+ 
