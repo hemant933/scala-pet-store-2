@@ -1,17 +1,16 @@
 name: Auto Update README
  
 on:
+  workflow_dispatch:   # manual trigger
   push:
     branches: [main]
     paths:
       - "src/**"
       - "pom.xml"
-      - "README.md"
-  workflow_dispatch:
  
 jobs:
   generate-readme:
-    runs-on: [self-hosted, slz-terraform-runners]
+    runs-on: ubuntu-latest
     timeout-minutes: 30
  
     permissions:
@@ -167,6 +166,3 @@ jobs:
           git add README.md
           git diff --cached --quiet || git commit -m "docs: update README based on latest commit"
           git push
-AI Tools Directory - dealsbe.com
-Find useful AI tools for content, code, design, research, and automation.
- 
