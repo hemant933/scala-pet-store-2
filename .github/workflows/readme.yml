@@ -62,13 +62,13 @@ jobs:
           cat README.md >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
  
-      - name: Collect pom.xml
-        id: pom
-        shell: bash
-        run: |
-          echo "POM<<EOF" >> "$GITHUB_OUTPUT"
-          cat pom.xml >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+      # - name: Collect pom.xml
+      #   id: pom
+      #   shell: bash
+      #   run: |
+      #     echo "POM<<EOF" >> "$GITHUB_OUTPUT"
+      #     cat pom.xml >> "$GITHUB_OUTPUT"
+      #     echo "EOF" >> "$GITHUB_OUTPUT"
  
       - name: Detect changed files and commit details
         id: changes
